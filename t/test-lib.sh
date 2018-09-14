@@ -160,6 +160,7 @@ check_var_migration () {
 
 check_var_migration GIT_FSMONITOR_TEST GIT_TEST_FSMONITOR
 check_var_migration TEST_GIT_INDEX_VERSION GIT_TEST_INDEX_VERSION
+check_var_migration GIT_FORCE_PRELOAD_TEST GIT_TEST_PRELOAD_INDEX
 
 # Add libc MALLOC and MALLOC_PERTURB test
 # only if we are not executing the test with valgrind
