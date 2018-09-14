@@ -134,9 +134,9 @@ export EDITOR
 GIT_TRACE_BARE=1
 export GIT_TRACE_BARE
 
-if test -n "${TEST_GIT_INDEX_VERSION:+isset}"
+if test -n "${GIT_TEST_INDEX_VERSION:+isset}"
 then
-	GIT_INDEX_VERSION="$TEST_GIT_INDEX_VERSION"
+	GIT_INDEX_VERSION="$GIT_TEST_INDEX_VERSION"
 	export GIT_INDEX_VERSION
 fi
 
@@ -159,6 +159,7 @@ check_var_migration () {
 }
 
 check_var_migration GIT_FSMONITOR_TEST GIT_TEST_FSMONITOR
+check_var_migration TEST_GIT_INDEX_VERSION GIT_TEST_INDEX_VERSION
 
 # Add libc MALLOC and MALLOC_PERTURB test
 # only if we are not executing the test with valgrind
