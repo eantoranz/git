@@ -338,6 +338,14 @@ for the index version specified.  Can be set to any valid version
 GIT_TEST_PRELOAD_INDEX=<boolean> exercises the preload-index code path
 by overriding the minimum number of cache entries required per thread.
 
+GIT_TEST_DISABLE_EOIE=<boolean> disables writing the EOIE extension.
+This is used to allow tests 1, 4-9 in t1700-split-index.sh to succeed
+as they currently hard code SHA values for the index which are no longer
+valid due to the addition of the EOIE extension.
+
+GIT_TEST_INDEX_THREADS=<boolean> forces multi-threaded loading of
+the index cache entries and extensions for the whole test suite.
+
 Naming Tests
 ------------
 
