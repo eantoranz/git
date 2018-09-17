@@ -64,6 +64,24 @@ enum wt_status_format {
 	STATUS_FORMAT_UNSPECIFIED
 };
 
+struct wt_status_state {
+	int merge_in_progress;
+	int am_in_progress;
+	int am_empty_patch;
+	int rebase_in_progress;
+	int rebase_interactive_in_progress;
+	int cherry_pick_in_progress;
+	int bisect_in_progress;
+	int revert_in_progress;
+	int detached_at;
+	char *branch;
+	char *onto;
+	char *detached_from;
+	struct object_id detached_oid;
+	struct object_id revert_head_oid;
+	struct object_id cherry_pick_head_oid;
+};
+
 struct wt_status {
 	int is_initial;
 	char *branch;
@@ -93,6 +111,7 @@ struct wt_status {
 	int rename_score;
 	int rename_limit;
 	enum wt_status_format status_format;
+	struct wt_status_state state;
 	unsigned char sha1_commit[GIT_MAX_RAWSZ]; /* when not Initial */
 
 	/* These are computed during processing of the individual sections */
@@ -105,24 +124,6 @@ struct wt_status {
 	struct string_list untracked;
 	struct string_list ignored;
 	uint32_t untracked_in_ms;
-};
-
-struct wt_status_state {
-	int merge_in_progress;
-	int am_in_progress;
-	int am_empty_patch;
-	int rebase_in_progress;
-	int rebase_interactive_in_progress;
-	int cherry_pick_in_progress;
-	int bisect_in_progress;
-	int revert_in_progress;
-	int detached_at;
-	char *branch;
-	char *onto;
-	char *detached_from;
-	struct object_id detached_oid;
-	struct object_id revert_head_oid;
-	struct object_id cherry_pick_head_oid;
 };
 
 size_t wt_status_locate_end(const char *s, size_t len);
