@@ -25,7 +25,7 @@
 #include "commit-reach.h"
 
 static int config_update_recurse_submodules = RECURSE_SUBMODULES_OFF;
-static struct string_list changed_submodule_names = STRING_LIST_INIT_DUP;
+
 static int initialized_fetch_ref_tips;
 static struct oid_array ref_tips_before_fetch;
 static struct oid_array ref_tips_after_fetch;
@@ -493,6 +493,12 @@ void prepare_submodule_repo_env(struct argv_array *out)
 	prepare_submodule_repo_env_no_git_dir(out);
 	argv_array_pushf(out, "%s=%s", GIT_DIR_ENVIRONMENT,
 			 DEFAULT_GIT_DIR_ENVIRONMENT);
+}
+
+static void prepare_submodule_repo_env_in_gitdir(struct argv_array *out)
+{
+	prepare_submodule_repo_env_no_git_dir(out);
+	argv_array_pushf(out, "%s=.", GIT_DIR_ENVIRONMENT);
 }
 
 /* Helper function to display the submodule header line prior to the full
@@ -1124,11 +1130,28 @@ void check_for_new_submodule_commits(struct object_id *oid)
 	oid_array_append(&ref_tips_after_fetch, oid);
 }
 
-static void calculate_changed_submodule_paths(void)
+struct submodule_parallel_fetch {
+	int count;
+	struct argv_array args;
+	struct repository *r;
+	const char *prefix;
+	int command_line_option;
+	int default_option;
+	int quiet;
+	int result;
+
+	struct string_list changed_submodule_names;
+	struct string_list retry;
+};
+#define SPF_INIT {0, ARGV_ARRAY_INIT, NULL, NULL, 0, 0, 0, 0, \
+		  STRING_LIST_INIT_DUP, \
+		  STRING_LIST_INIT_NODUP}
+
+static void calculate_changed_submodule_paths(
+	struct submodule_parallel_fetch *spf)
 {
 	struct argv_array argv = ARGV_ARRAY_INIT;
-	struct string_list changed_submodules = STRING_LIST_INIT_DUP;
-	const struct string_list_item *name;
+	struct string_list_item *name;
 
 	/* No need to check if there are no submodules configured */
 	if (!submodule_from_path(the_repository, NULL, NULL))
@@ -1145,9 +1168,9 @@ static void calculate_changed_submodule_paths(void)
 	 * Collect all submodules (whether checked out or not) for which new
 	 * commits have been recorded upstream in "changed_submodule_names".
 	 */
-	collect_changed_submodules(&changed_submodules, &argv);
+	collect_changed_submodules(&spf->changed_submodule_names, &argv);
 
-	for_each_string_list_item(name, &changed_submodules) {
+	for_each_string_list_item(name, &spf->changed_submodule_names) {
 		struct oid_array *commits = name->util;
 		const struct submodule *submodule;
 		const char *path = NULL;
@@ -1161,11 +1184,14 @@ static void calculate_changed_submodule_paths(void)
 		if (!path)
 			continue;
 
-		if (!submodule_has_commits(path, commits))
-			string_list_append(&changed_submodule_names, name->string);
+		if (submodule_has_commits(path, commits)) {
+			oid_array_clear(commits);
+			*name->string = '\0';
+		}
 	}
 
-	free_submodules_oids(&changed_submodules);
+	string_list_remove_empty_items(&spf->changed_submodule_names, 1);
+
 	argv_array_clear(&argv);
 	oid_array_clear(&ref_tips_before_fetch);
 	oid_array_clear(&ref_tips_after_fetch);
@@ -1199,18 +1225,6 @@ int submodule_touches_in_range(struct object_id *excl_oid,
 	return ret;
 }
 
-struct submodule_parallel_fetch {
-	int count;
-	struct argv_array args;
-	struct repository *r;
-	const char *prefix;
-	int command_line_option;
-	int default_option;
-	int quiet;
-	int result;
-};
-#define SPF_INIT {0, ARGV_ARRAY_INIT, NULL, NULL, 0, 0, 0, 0}
-
 static int get_fetch_recurse_config(const struct submodule *submodule,
 				    struct submodule_parallel_fetch *spf)
 {
@@ -1236,15 +1250,36 @@ static int get_fetch_recurse_config(const struct submodule *submodule,
 	return spf->default_option;
 }
 
+static const char *get_submodule_git_dir(struct repository *r, const char *path)
+{
+	struct repository subrepo;
+	const char *ret;
+
+	if (repo_submodule_init(&subrepo, r, path)) {
+		/* no entry in .gitmodules? */
+		struct strbuf gitdir = STRBUF_INIT;
+		strbuf_repo_worktree_path(&gitdir, r, "%s/.git", path);
+		if (repo_init(&subrepo, gitdir.buf, NULL)) {
+			strbuf_release(&gitdir);
+			return NULL;
+		}
+	}
+
+	ret = xstrdup(subrepo.gitdir);
+	repo_clear(&subrepo);
+
+	return ret;
+}
+
 static int get_next_submodule(struct child_process *cp,
 			      struct strbuf *err, void *data, void **task_cb)
 {
 	int ret = 0;
 	struct submodule_parallel_fetch *spf = data;
+	struct string_list_item *it;
 
 	for (; spf->count < spf->r->index->cache_nr; spf->count++) {
-		struct strbuf submodule_path = STRBUF_INIT;
-		struct strbuf submodule_git_dir = STRBUF_INIT;
+		int recurse_config;
 		struct strbuf submodule_prefix = STRBUF_INIT;
 		const struct cache_entry *ce = spf->r->index->cache[spf->count];
 		const char *git_dir, *default_argv;
@@ -1258,18 +1293,23 @@ static int get_next_submodule(struct child_process *cp,
 		if (!submodule) {
 			const char *name = default_name_or_path(ce->name);
 			if (name) {
-				default_submodule.path = default_submodule.name = name;
+				default_submodule.path = name;
+				default_submodule.name = name;
 				submodule = &default_submodule;
 			}
 		}
 
-		switch (get_fetch_recurse_config(submodule, spf))
+		recurse_config = get_fetch_recurse_config(submodule, spf);
+
+		switch (recurse_config)
 		{
 		default:
 		case RECURSE_SUBMODULES_DEFAULT:
 		case RECURSE_SUBMODULES_ON_DEMAND:
-			if (!submodule || !unsorted_string_list_lookup(&changed_submodule_names,
-							 submodule->name))
+			if (!submodule ||
+			    !string_list_lookup(
+					&spf->changed_submodule_names,
+					submodule->name))
 				continue;
 			default_argv = "on-demand";
 			break;
@@ -1280,16 +1320,12 @@ static int get_next_submodule(struct child_process *cp,
 			continue;
 		}
 
-		strbuf_repo_worktree_path(&submodule_path, spf->r, "%s", ce->name);
-		strbuf_addf(&submodule_git_dir, "%s/.git", submodule_path.buf);
 		strbuf_addf(&submodule_prefix, "%s%s/", spf->prefix, ce->name);
-		git_dir = read_gitfile(submodule_git_dir.buf);
-		if (!git_dir)
-			git_dir = submodule_git_dir.buf;
-		if (is_directory(git_dir)) {
+		git_dir = get_submodule_git_dir(spf->r, ce->name);
+		if (git_dir) {
 			child_process_init(cp);
-			cp->dir = strbuf_detach(&submodule_path, NULL);
-			prepare_submodule_repo_env(&cp->env_array);
+			prepare_submodule_repo_env_in_gitdir(&cp->env_array);
+			cp->dir = git_dir;
 			cp->git_cmd = 1;
 			if (!spf->quiet)
 				strbuf_addf(err, "Fetching submodule %s%s\n",
@@ -1301,14 +1337,53 @@ static int get_next_submodule(struct child_process *cp,
 			argv_array_push(&cp->args, submodule_prefix.buf);
 			ret = 1;
 		}
-		strbuf_release(&submodule_path);
-		strbuf_release(&submodule_git_dir);
 		strbuf_release(&submodule_prefix);
 		if (ret) {
 			spf->count++;
+			if (submodule != &default_submodule)
+				/* discard const-ness: */
+				*task_cb = (void*)submodule;
 			return 1;
 		}
 	}
+
+retry_next:
+
+	if (spf->retry.nr) {
+		struct strbuf submodule_prefix = STRBUF_INIT;
+		const struct submodule *sub;
+
+		it = string_list_last(&spf->retry);
+		sub = submodule_from_name(spf->r, &null_oid,
+					  it->string);
+
+		child_process_init(cp);
+		cp->dir = get_submodule_git_dir(spf->r, sub->path);
+		if (!cp->dir) {
+			string_list_pop(&spf->retry, 0);
+			goto retry_next;
+		}
+		prepare_submodule_repo_env_in_gitdir(&cp->env_array);
+		cp->git_cmd = 1;
+
+		strbuf_addf(&submodule_prefix, "%s%s/", spf->prefix, sub->path);
+		argv_array_init(&cp->args);
+		argv_array_pushv(&cp->args, spf->args.argv);
+		argv_array_push(&cp->args, "on-demand");
+		argv_array_push(&cp->args, "--submodule-prefix");
+		argv_array_push(&cp->args, submodule_prefix.buf);
+
+		/* NEEDSWORK: have get_default_remote from s--h */
+		argv_array_push(&cp->args, "origin");
+		oid_array_for_each_unique(it->util,
+					  append_oid_to_argv, &cp->args);
+
+		*task_cb = NULL; /* make sure we do not recurse forever */
+		strbuf_release(&submodule_prefix);
+		string_list_pop(&spf->retry, 0);
+		return 1;
+	}
+
 	return 0;
 }
 
@@ -1322,13 +1397,48 @@ static int fetch_start_failure(struct strbuf *err,
 	return 0;
 }
 
+static int commit_exists_in_sub(const struct object_id *oid, void *data)
+{
+	struct repository *subrepo = data;
+
+	enum object_type type = oid_object_info(subrepo, oid, NULL);
+
+	return type != OBJ_COMMIT;
+}
+
 static int fetch_finish(int retvalue, struct strbuf *err,
 			void *cb, void *task_cb)
 {
 	struct submodule_parallel_fetch *spf = cb;
+	struct submodule *sub = task_cb;
+	struct repository subrepo;
 
 	if (retvalue)
 		spf->result = 1;
+
+	if (!sub)
+		return 0;
+
+	if (repo_submodule_init(&subrepo, spf->r, sub->path) < 0)
+		warning(_("Could not get submodule repository for submodule '%s' in repository '%s'"),
+			  sub->path, spf->r->worktree);
+	else {
+		struct string_list_item *it;
+		struct oid_array *commits;
+
+		it = string_list_lookup(&spf->changed_submodule_names, sub->name);
+		if (!it)
+			return 0;
+
+		commits = it->util;
+		oid_array_filter(commits,
+				 commit_exists_in_sub,
+				 &subrepo);
+
+		if (commits->nr)
+			string_list_append(&spf->retry, sub->name)
+				->util = commits;
+	}
 
 	return 0;
 }
@@ -1360,7 +1470,8 @@ int fetch_populated_submodules(struct repository *r,
 	argv_array_push(&spf.args, "--recurse-submodules-default");
 	/* default value, "--submodule-prefix" and its value are added later */
 
-	calculate_changed_submodule_paths();
+	calculate_changed_submodule_paths(&spf);
+	string_list_sort(&spf.changed_submodule_names);
 	run_processes_parallel(max_parallel_jobs,
 			       get_next_submodule,
 			       fetch_start_failure,
@@ -1369,7 +1480,7 @@ int fetch_populated_submodules(struct repository *r,
 
 	argv_array_clear(&spf.args);
 out:
-	string_list_clear(&changed_submodule_names, 1);
+	free_submodules_oids(&spf.changed_submodule_names);
 	return spf.result;
 }
 

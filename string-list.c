@@ -80,6 +80,20 @@ void string_list_remove(struct string_list *list, const char *string,
 	}
 }
 
+void string_list_pop(struct string_list *list, int free_util)
+{
+	if (list->nr == 0)
+		BUG("tried to remove an item from empty string list");
+
+	if (list->strdup_strings)
+		free(list->items[list->nr - 1].string);
+
+	if (free_util)
+		free(list->items[list->nr - 1].util);
+
+	list->nr--;
+}
+
 int string_list_has_string(const struct string_list *list, const char *string)
 {
 	int exact_match;

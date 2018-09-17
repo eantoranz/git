@@ -183,6 +183,17 @@ extern void string_list_remove(struct string_list *list, const char *string,
  */
 struct string_list_item *string_list_lookup(struct string_list *list, const char *string);
 
+/**
+ * Removes the last item from the list.
+ * The caller must ensure that the list is not empty.
+ */
+void string_list_pop(struct string_list *list, int free_util);
+
+static inline struct string_list_item *string_list_last(struct string_list *list)
+{
+	return &list->items[list->nr - 1];
+}
+
 /*
  * Remove all but the first of consecutive entries with the same
  * string value.  If free_util is true, call free() on the util

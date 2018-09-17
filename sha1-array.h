@@ -23,4 +23,9 @@ int oid_array_for_each_unique(struct oid_array *array,
 			      for_each_oid_fn fn,
 			      void *data);
 
+/* Call fn for each oid, and remove it if fn returns 0, retain it otherwise */
+int oid_array_filter(struct oid_array *array,
+		     for_each_oid_fn fn,
+		     void *cbdata);
+
 #endif /* SHA1_ARRAY_H */
