@@ -30,6 +30,16 @@ test_expect_success 'verify blob:none omits all 5 blobs' '
 	test_cmp observed expected
 '
 
+test_expect_success 'specify blob explicitly prevents filtering' '
+	file_3=$(git -C r1 ls-files -s file.3 \
+		| awk -f print_2.awk) &&
+	file_4=$(git -C r1 ls-files -s file.4 \
+		| awk -f print_2.awk) &&
+	git -C r1 rev-list HEAD --objects --filter=blob:none HEAD $file_3 >observed &&
+	grep -q "$file_3" observed &&
+	test_must_fail grep -q "$file_4" observed
+'
+
 test_expect_success 'verify emitted+omitted == all' '
 	git -C r1 rev-list HEAD --objects \
 		| awk -f print_1.awk \
@@ -193,6 +203,35 @@ test_expect_success 'verify sparse:oid=oid-ish omits top-level files' '
 		| sed "s/~//" \
 		| sort >observed &&
 	test_cmp observed expected
+'
+
+test_expect_success 'rev-list W/ --missing=print and --missing=allow-any for trees' '
+	TREE=$(git -C r3 rev-parse HEAD:dir1) &&
+
+	rm r3/.git/objects/$(echo $TREE | sed "s|^..|&/|") &&
+
+	git -C r3 rev-list --quiet --missing=print --objects HEAD >missing_objs 2>rev_list_err &&
+	echo "?$TREE" >expected &&
+	test_cmp expected missing_objs &&
+
+	# do not complain when a missing tree cannot be parsed
+	test_must_be_empty rev_list_err &&
+
+	git -C r3 rev-list --missing=allow-any --objects HEAD >objs 2>rev_list_err &&
+	! grep $TREE objs &&
+	test_must_be_empty rev_list_err
+'
+
+# Test tree:0 filter.
+
+test_expect_success 'verify tree:0 includes trees in "filtered" output' '
+	git -C r3 rev-list HEAD --quiet --objects --filter-print-omitted --filter=tree:0 \
+		| awk -f print_1.awk \
+		| sed s/~// \
+		| xargs -n1 git -C r3 cat-file -t \
+		| sort -u >filtered_types &&
+	printf "blob\ntree\n" > expected &&
+	test_cmp filtered_types expected
 '
 
 # Delete some loose objects and use rev-list, but WITHOUT any filtering.
