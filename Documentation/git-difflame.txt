@@ -1,0 +1,21 @@
+git-difflame(1)
+=====================
+
+NAME
+----
+git-difflame - Show a mixture of diff with blame information for
+added/deleted lines
+
+
+SYNOPSIS
+--------
+[verse]
+'git difflame'
+
+DESCRIPTION
+-----------
+Show a mixture of diff with blame information for added/deleted lines
+
+GIT
+---
+Part of the linkgit:git[1] suite
