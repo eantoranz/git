@@ -143,6 +143,7 @@ git-quiltimport                         foreignscminterface
 git-range-diff                          mainporcelain
 git-read-tree                           plumbingmanipulators
 git-rebase                              mainporcelain           history
+git-rebuash                             mainporcelain           history
 git-receive-pack                        synchelpers
 git-reflog                              ancillarymanipulators           complete
 git-remote                              ancillarymanipulators           complete
