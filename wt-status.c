@@ -1118,11 +1118,24 @@ static void show_merge_in_progress(struct wt_status *s,
 	if (has_unmerged(s)) {
 		status_printf_ln(s, color, _("You have unmerged paths."));
 		if (s->hints) {
-			status_printf_ln(s, color,
-					 _("  (fix conflicts and run \"git commit\")"));
-			status_printf_ln(s, color,
-					 _("  (use \"git merge --abort\" to abort the merge)"));
+			if (s->state.rebuash_in_progress) {
+				status_printf_ln(s, color,
+						_("  (fix conflicts and run \"git rebuash --continue\")"));
+				status_printf_ln(s, color,
+						_("  (use \"git rebuash --abort\" to abort the operation)"));
+			} else {
+				status_printf_ln(s, color,
+						_("  (fix conflicts and run \"git commit\")"));
+				status_printf_ln(s, color,
+						_("  (use \"git merge --abort\" to abort the merge)"));
+			}
 		}
+	} else if (s->state.rebuash_in_progress) {
+		status_printf_ln(s, color,
+			_("All conflicts fixed but you are still rebuashing."));
+		if (s->hints)
+			status_printf_ln(s, color,
+				_("  (use \"git rebuash --continue\" to conclude rebuash)"));
 	} else {
 		status_printf_ln(s, color,
 			_("All conflicts fixed but you are still merging."));
@@ -1386,6 +1399,15 @@ static void show_rebase_in_progress(struct wt_status *s,
 	wt_longstatus_print_trailer(s);
 }
 
+static void show_rebuash_in_progress(struct wt_status *s,
+				    const char *color)
+{
+	if (&s->state.rebuash_in_progress)
+		status_printf_ln(s, color,
+			_("Rebuash currently in progress."));
+	wt_longstatus_print_trailer(s);
+}
+
 static void show_cherry_pick_in_progress(struct wt_status *s,
 					 const char *color)
 {
@@ -1583,6 +1605,18 @@ int wt_status_check_rebase(const struct worktree *wt,
 	return 1;
 }
 
+int wt_status_check_rebuash(const struct worktree *wt,
+			   struct wt_status_state *state)
+{
+	struct stat st;
+
+	if (!stat(worktree_git_path(wt, "REBUASH_STATE"), &st)) {
+		state->rebuash_in_progress = 1;
+	} else
+		return 0;
+	return 1;
+}
+
 int wt_status_check_bisect(const struct worktree *wt,
 			   struct wt_status_state *state)
 {
@@ -1614,6 +1648,7 @@ void wt_status_get_state(struct repository *r,
 		state->cherry_pick_in_progress = 1;
 		oidcpy(&state->cherry_pick_head_oid, &oid);
 	}
+	wt_status_check_rebuash(NULL, state);
 	wt_status_check_bisect(NULL, state);
 	if (!stat(git_path_revert_head(r), &st) &&
 	    !get_oid("REVERT_HEAD", &oid)) {
@@ -1643,6 +1678,8 @@ static void wt_longstatus_print_state(struct wt_status *s)
 			show_rebase_information(s, state_color);
 			fputs("\n", s->fp);
 		}
+		if (state->rebuash_in_progress)
+			show_rebuash_in_progress(s, state_color);
 		show_merge_in_progress(s, state_color);
 	} else if (state->am_in_progress)
 		show_am_in_progress(s, state_color);
@@ -1688,7 +1725,7 @@ static void wt_longstatus_print(struct wt_status *s)
 		status_printf(s, color(WT_STATUS_HEADER, s), "%s", "");
 		status_printf_more(s, branch_status_color, "%s", on_what);
 		status_printf_more(s, branch_color, "%s\n", branch_name);
-		if (!s->is_initial)
+		if (!(s->is_initial || s->state.rebuash_in_progress))
 			wt_longstatus_print_tracking(s);
 	}
 
@@ -1731,7 +1768,7 @@ static void wt_longstatus_print(struct wt_status *s)
 
 	if (s->verbose)
 		wt_longstatus_print_verbose(s);
-	if (!s->committable) {
+	if (!(s->committable || s->state.rebuash_in_progress)) {
 		if (s->amend)
 			status_printf_ln(s, GIT_COLOR_NORMAL, _("No changes"));
 		else if (s->nowarn)

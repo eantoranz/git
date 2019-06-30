@@ -72,6 +72,7 @@ struct wt_status_state {
 	int rebase_in_progress;
 	int rebase_interactive_in_progress;
 	int cherry_pick_in_progress;
+	int rebuash_in_progress;
 	int bisect_in_progress;
 	int revert_in_progress;
 	int detached_at;
