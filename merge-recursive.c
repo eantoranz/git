@@ -3493,7 +3493,7 @@ static struct commit_list *reverse_commit_list(struct commit_list *list)
 int merge_recursive(struct merge_options *opt,
 		    struct commit *h1,
 		    struct commit *h2,
-		    struct commit_list *ca,
+		    struct commit_list *ca, // common ancestors (will be calculated if missing)
 		    struct commit **result)
 {
 	struct commit_list *iter;

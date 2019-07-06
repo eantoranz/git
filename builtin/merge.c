@@ -57,12 +57,15 @@ static const char * const builtin_merge_usage[] = {
 	NULL
 };
 
+/*
+ * squash: create a squash commit instead of a merge commit (--squash)
+ */
 static int show_diffstat = 1, shortlog_len = -1, squash;
-static int option_commit = 1;
+static int option_commit = 1; // create a new revision on a 1-shot or stop and wait for user to finish (--[no-]commit)
 static int option_edit = -1;
 static int allow_trivial = 1, have_message, verify_signatures;
 static int overwrite_ignore = 1;
-static struct strbuf merge_msg = STRBUF_INIT;
+static struct strbuf merge_msg = STRBUF_INIT; // Variable to hold comment from user (-m)
 static struct strategy **use_strategies;
 static size_t use_strategies_nr, use_strategies_alloc;
 static const char **xopts;
@@ -295,12 +298,21 @@ static void drop_save(void)
 	unlink(git_path_merge_mode(the_repository));
 }
 
+/**
+ * Try to create a stash object with current changes that are laying around
+ * 
+ * @param stash id of the object, if created
+ * 
+ * @return
+ * 	0 if a new stash object was created (id will be saved in @param stash)
+ * 	-1 if there was no change
+ */
 static int save_state(struct object_id *stash)
 {
 	int len;
 	struct child_process cp = CHILD_PROCESS_INIT;
 	struct strbuf buffer = STRBUF_INIT;
-	const char *argv[] = {"stash", "create", NULL};
+	const char *argv[] = {"stash", "create", NULL}; // create stash object, no change in references
 	int rc = -1;
 
 	cp.argv = argv;
@@ -360,6 +372,9 @@ static void reset_hard(const struct object_id *oid, int verbose)
 		die(_("read-tree failed"));
 }
 
+/**
+ * Rewind the tree to pristine (uses a call to reset_hard()... which in turn uses git read-tree --reset)
+ */
 static void restore_state(const struct object_id *head,
 			  const struct object_id *stash)
 {
@@ -391,6 +406,12 @@ static void finish_up_to_date(const char *msg)
 	drop_save();
 }
 
+/**
+ * Create default squash message by using commit and remoteheads
+ * Default message will contain the description of the commits that are in remoteheads and that are not part of the history of commit
+ * 
+ * message is persisted in $GIT_DIR/SQUASH_MSG
+ */
 static void squash_message(struct commit *commit, struct commit_list *remoteheads)
 {
 	struct rev_info rev;
@@ -429,6 +450,21 @@ static void squash_message(struct commit *commit, struct commit_list *remotehead
 	strbuf_release(&out);
 }
 
+/**
+ * At this moment, everything about a merge (not squash, only MERGE) should already be persisted in $GIT_DIR
+ * 
+ * if msg is empty, get value from environment value GET_REFLOG_ACTION (right?)
+ * show msg to user on terminal
+ * if squash, calculate AND PERSIST squash message
+ * else (not squash):
+ * 	- if there' s no merge message, _stop_ and say that merge won't move HEAD
+ * 	- else (there' s a message), move HEAD reference, run gc
+ * if a new revision was created (param new_rev), show stats (optional)
+ * run post-merge hook (TODO translate this call)
+ * 
+ * @param new_head: newly created revision. Will be NULL if ran with --squash
+ * @param msg: will be shown to the user and will also be used in reflog
+ */
 static void finish(struct commit *head_commit,
 		   struct commit_list *remoteheads,
 		   const struct object_id *new_head, const char *msg)
@@ -682,6 +718,9 @@ static int read_tree_trivial(struct object_id *common, struct object_id *head,
 	return 0;
 }
 
+/**
+ * Create a tree object from the current index
+ */
 static void write_tree_trivial(struct object_id *oid)
 {
 	if (write_cache_as_tree(oid, 0, NULL))
@@ -817,6 +856,25 @@ N_("Lines starting with '%c' will be ignored, and an empty message aborts\n"
    "the commit.\n");
 
 static void write_merge_heads(struct commit_list *);
+
+/**
+ * save remoteheads in $GIT_DIR/MERGE_HEAD
+ * 
+ * write merge message (as provided on -m) into $GIT_DIR/MERGE_MSG
+ * Capture message from editor if --edit option is set
+ * 
+ * run commit hook (TODO what are the values used as parameters?)
+ * 
+ * run editor if --edit was provided (working on $GIT_DIR/MERGE_MSG)
+ * 
+ * if --verify is used, run commit-hook (TODO what are the parameters used?)
+ * 	if it fails, call abort_commit()
+ * 
+ * If the message is empty, abort commit
+ * 
+ * Save the message as coming out of the editor as merge_msg
+ * 
+ */
 static void prepare_to_commit(struct commit_list *remoteheads)
 {
 	struct strbuf msg = STRBUF_INIT;
@@ -860,6 +918,16 @@ static void prepare_to_commit(struct commit_list *remoteheads)
 	strbuf_release(&msg);
 }
 
+/**
+ * create a lockfile on the index
+ * refresh_cache (TODO ???)
+ * Try to write what is on the index on the working tree (TODO Righ???)
+ * Set up a list of parents with current head and remoteheads
+ * persist heads and merge message in $GIT_DIR
+ * create new revision with parents, working tree, merge_msg
+ * show message to user, move reference for HEAD , show stats, run post-merge hook
+ * remove merge persisted information
+ */
 static int merge_trivial(struct commit *head, struct commit_list *remoteheads)
 {
 	struct object_id result_tree, result_commit;
@@ -880,11 +948,24 @@ static int merge_trivial(struct commit *head, struct commit_list *remoteheads)
 	if (commit_tree(merge_msg.buf, merge_msg.len, &result_tree, parents,
 			&result_commit, NULL, sign_commit))
 		die(_("failed to write commit object"));
-	finish(head, remoteheads, &result_commit, "In-index merge");
-	drop_save();
+	finish(head, remoteheads, &result_commit, "In-index merge"); // show msg to user, move HEAD ref, show stats, run post-merge hook
+	drop_save(); // remove merge persistent information
 	return 0;
 }
 
+/**
+ * Happy path after a successful merge with no conflicts:
+ * 
+ * - release the list of revisions in common
+ * - if HEAD is not included in the history of remoteheads (or if --no-ff), it is added to the list of parents for the revision
+ * 	(the original list of remoteheads remains the same)
+ * - figures out and persists message for merge (even opens editor if required)
+ * - create a new revision
+ * - Sets up the message for the user and reflog about the strategy for the merge
+ * - wraps up the merge process (call to finish)
+ * - cleans up persisted information about merge in $GIT_DIR files
+ * - return 0
+ */
 static int finish_automerge(struct commit *head,
 			    int head_subsumed,
 			    struct commit_list *common,
@@ -898,16 +979,20 @@ static int finish_automerge(struct commit *head,
 
 	free_commit_list(common);
 	parents = remoteheads;
+	// if head is _not_ part of the history of one of the other parents, add it to the list of parents (or --no-ff)
 	if (!head_subsumed || fast_forward == FF_NO)
 		commit_list_insert(head, &parents);
+	// persist heads and message for next revision (even opens editor for user)
 	prepare_to_commit(remoteheads);
+	// try to create the new revision with message, list of parents
 	if (commit_tree(merge_msg.buf, merge_msg.len, result_tree, parents,
 			&result_commit, NULL, sign_commit))
 		die(_("failed to write commit object"));
-	strbuf_addf(&buf, "Merge made by the '%s' strategy.", wt_strategy);
+	strbuf_addf(&buf, "Merge made by the '%s' strategy.", wt_strategy); // set up message to be used for reflog
+	 // wrap up process (show message to user, move HEAD and adjust reflog, show stats, call post-merge hook)
 	finish(head, remoteheads, &result_commit, buf.buf);
 	strbuf_release(&buf);
-	drop_save();
+	drop_save(); // clean up persited information about MERGE in $GIT_DIR files
 	return 0;
 }
 
@@ -990,6 +1075,10 @@ static int setup_with_upstream(const char ***argv)
 	return i;
 }
 
+/**
+ * Write the provided list of heads into $GIT_DIR/MERGE_HEAD
+ * write the mode (no-ff if set) into $GIT_DIR/MERGE_MODE
+ */
 static void write_merge_heads(struct commit_list *remoteheads)
 {
 	struct commit_list *j;
@@ -1000,7 +1089,7 @@ static void write_merge_heads(struct commit_list *remoteheads)
 		struct commit *c = j->item;
 		struct merge_remote_desc *desc;
 
-		desc = merge_remote_util(c);
+		desc = merge_remote_util(c); // TODO what does this do?
 		if (desc && desc->obj) {
 			oid = &desc->obj->oid;
 		} else {
@@ -1017,6 +1106,12 @@ static void write_merge_heads(struct commit_list *remoteheads)
 	strbuf_release(&buf);
 }
 
+/**
+ * Persist status of merge into $GIT_DIR files (MERGE_HEAD, MERGE_MODE, MERGE_MSG)
+ * 
+ * merge_msg (normally, what the user used as message with -m) will be saved into $GIT_DIR/MERGE_MSG
+ * remoteheads will be saved into $GIT_DIR/MERGE_HEAD
+ */
 static void write_merge_state(struct commit_list *remoteheads)
 {
 	write_merge_heads(remoteheads);
@@ -1589,13 +1684,15 @@ int cmd_merge(int argc, const char **argv, const char *prefix)
 					 common, remoteheads,
 					 head_commit);
 		if (!option_commit && !ret) {
-			merge_was_ok = 1;
+			// successful merge, user does not want to create a new revision yet (will finish with git commit or whatever)
+			merge_was_ok = 1; // this will make the cycle of checking strategies to stop because... on next asignment of ret we will.... (look at next instruction)
 			/*
 			 * This is necessary here just to avoid writing
 			 * the tree, but later we will *not* exit with
 			 * status code 1 because merge_was_ok is set.
 			 */
-			ret = 1;
+			ret = 1; // make it look like there were conflicts
+			// we don't just break because we want to go through the logic of setting best_strategy
 		}
 
 		if (ret) {
@@ -1605,6 +1702,7 @@ int cmd_merge(int argc, const char **argv, const char *prefix)
 			 * handle the given merge at all.
 			 */
 			if (ret == 1) {
+				// there were conflicts or (as we can see on previous section), there were no errors but user does not want to create a new revision
 				int cnt = evaluate_result();
 
 				if (best_cnt <= 0 || cnt <= best_cnt) {
@@ -1619,8 +1717,8 @@ int cmd_merge(int argc, const char **argv, const char *prefix)
 		}
 
 		/* Automerge succeeded. */
-		write_tree_trivial(&result_tree);
-		automerge_was_ok = 1;
+		write_tree_trivial(&result_tree); // create a tree object from the current index
+		automerge_was_ok = 1; // we have a merge with no conflicts
 		break;
 	}
 
@@ -1629,6 +1727,7 @@ int cmd_merge(int argc, const char **argv, const char *prefix)
 	 * auto resolved the merge cleanly.
 	 */
 	if (automerge_was_ok) {
+		// we have a merge with no conflicts so take happy path
 		ret = finish_automerge(head_commit, head_subsumed,
 				       common, remoteheads,
 				       &result_tree, wt_strategy);
